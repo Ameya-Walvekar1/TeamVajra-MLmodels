@@ -1,0 +1,6 @@
+path: /home/ameya/SIH1/ai/tests/model1_validation/visdrone_yolo
+train: images
+val: images
+
+names:
+  0: person
