@@ -16,6 +16,10 @@ env/
 *.tmp
 *.temp
 
+# Large dataset raw annotations & caches
+models/person_visdrone/VisDrone/
+models/person_visdrone/.cache/
+
 # OS
 .DS_Store
 Thumbs.db
