@@ -60,6 +60,9 @@ class VideoProcessor:
         frames_to_process = min(total_frames, max_frames) if total_frames > 0 else 900
 
         # Universal H.264 MP4 writer (YUV420p) for 100% Linux, Windows, macOS & browser playback
+        is_imageio = False
+        writer = None
+
         try:
             import imageio
             writer = imageio.get_writer(
@@ -70,11 +73,33 @@ class VideoProcessor:
                 macro_block_size=8,
             )
             is_imageio = True
-        except Exception as e:
-            print(f"[WARN] imageio H.264 writer unavailable: {e}. Fallback to OpenCV mp4v.")
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            writer = cv2.VideoWriter(output_path, fourcc, fps, (target_w, target_h))
-            is_imageio = False
+        except Exception:
+            try:
+                import imageio_ffmpeg
+                import imageio
+                writer = imageio.get_writer(
+                    output_path,
+                    fps=fps,
+                    codec="libx264",
+                    pixelformat="yuv420p",
+                    macro_block_size=8,
+                )
+                is_imageio = True
+            except Exception:
+                fourcc_options = [
+                    cv2.VideoWriter_fourcc(*"avc1"),
+                    cv2.VideoWriter_fourcc(*"H264"),
+                    cv2.VideoWriter_fourcc(*"mp4v"),
+                ]
+                for fourcc in fourcc_options:
+                    w_test = cv2.VideoWriter(output_path, fourcc, fps, (target_w, target_h))
+                    if w_test.isOpened():
+                        writer = w_test
+                        break
+                if writer is None or not writer.isOpened():
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(output_path, fourcc, fps, (target_w, target_h))
+                is_imageio = False
 
         timeline_events = []
         contexts_cycle = [
@@ -200,6 +225,7 @@ class VideoProcessor:
             writer.close()
         else:
             writer.release()
+            self._ensure_browser_h264_compatible(output_path, fps)
 
         total_elapsed = time.perf_counter() - start_proc_time
         effective_fps = frame_idx / total_elapsed if total_elapsed > 0 else 0.0
@@ -297,3 +323,25 @@ class VideoProcessor:
 
         # Telemetry timer
         cv2.putText(img, time_str, (w - 240, 23), font, 0.46, (200, 210, 220), 1, cv2.LINE_AA)
+
+    def _ensure_browser_h264_compatible(self, video_path: str, fps: float):
+        """Re-encode MP4 video to baseline H.264 (yuv420p) if OpenCV created an mp4v stream."""
+        try:
+            import imageio_ffmpeg
+            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+            temp_h264 = video_path + ".h264.mp4"
+            import subprocess
+            cmd = [
+                ffmpeg_exe,
+                "-y",
+                "-i", video_path,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                temp_h264,
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            if os.path.exists(temp_h264) and os.path.getsize(temp_h264) > 0:
+                os.replace(temp_h264, video_path)
+        except Exception:
+            pass

@@ -407,8 +407,6 @@ def main():
     with st.sidebar:
         st.markdown('<div class="card-title">Mission Control Configuration</div>', unsafe_allow_html=True)
 
-        input_type = st.radio("OPERATIONAL INPUT TYPE", ["IMAGE", "VIDEO"], index=0)
-
         conf_threshold = st.slider(
             "DETECTION CONFIDENCE THRESHOLD",
             min_value=0.05,
@@ -445,187 +443,86 @@ def main():
         """, unsafe_allow_html=True)
 
     # ==========================================================
-    # IMAGE MODE
-    # Layout matches:
-    # INPUT / IMAGE
-    # INFERENCE VIEW | CONTEXT SWITCHING
-    # MODEL STATUS
+    # VIDEO MISSION CONTROL DASHBOARD
     # ==========================================================
-    if input_type == "IMAGE":
-        # 1. INPUT / IMAGE Card
-        st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Input / Image</div>', unsafe_allow_html=True)
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Video Stream Upload & Processing Configuration</div>', unsafe_allow_html=True)
 
-        col_up, col_synth = st.columns([3, 1])
-        with col_up:
-            uploaded_image = st.file_uploader(
-                "Upload Mission Image (JPG, PNG, JPEG, BMP, TIFF)",
-                type=["jpg", "jpeg", "png", "bmp", "tiff"],
-                key="image_uploader",
-            )
-        with col_synth:
-            st.markdown("<p style='font-size:0.75rem; color:#64748b; margin-top:10px;'>Or initialize a synthetic UAV sensor frame:</p>", unsafe_allow_html=True)
-            use_synthetic = st.button("GENERATE UAV FRAME", use_container_width=True)
+    col_vcfg1, col_vcfg2 = st.columns(2)
+    with col_vcfg1:
+        uploaded_video = st.file_uploader(
+            "Upload UAV Video Stream (MP4, AVI, MOV, MKV)",
+            type=["mp4", "avi", "mov", "mkv"],
+            key="video_uploader",
+        )
+    if uploaded_video is not None:
+        vid_key = f"{uploaded_video.name}_{uploaded_video.size}"
+        if st.session_state.get("active_video_key") != vid_key:
+            orig_suffix = Path(uploaded_video.name).suffix or ".mp4"
+            tfile = tempfile.NamedTemporaryFile(delete=False, suffix=orig_suffix)
+            tfile.write(uploaded_video.getvalue() if hasattr(uploaded_video, "getvalue") else uploaded_video.read())
+            tfile.flush()
+            tfile.close()
 
-        image_np = None
-        if uploaded_image is not None:
-            try:
-                pil_img = Image.open(uploaded_image).convert("RGB")
-                image_np = np.array(pil_img)
-            except Exception as e:
-                st.error(f"Error reading image: {e}")
-        elif use_synthetic or st.session_state.get("use_synthetic", False):
-            st.session_state["use_synthetic"] = True
-            h, w = 512, 512
-            syn = np.zeros((h, w, 3), dtype=np.uint8)
-            syn[:] = (70, 95, 70)  # Terrain
-            cv2.line(syn, (0, 200), (512, 350), (140, 140, 150), 44)  # Road
-            cv2.circle(syn, (420, 160), 85, (50, 110, 180), -1)  # Water
-            image_np = syn
+            # Default to AUTO-DETECT (MODEL 5 / MAIN INFERENCE SWITCHER) for all uploaded videos
+            preset_model = "AUTO-DETECT (MODEL 5 / MAIN INFERENCE SWITCHER)"
 
-        st.markdown('</div>', unsafe_allow_html=True)
+            st.session_state["video_target_model_select"] = preset_model
+            st.session_state["active_video_key"] = vid_key
+            st.session_state["input_video_path"] = tfile.name
+            st.session_state["uploaded_video_name"] = uploaded_video.name
+            st.session_state["output_video_bytes"] = None
+            st.session_state["proc_res"] = None
 
-        # 2. 2-Column Section: INFERENCE VIEW | CONTEXT SWITCHING
-        col_inf, col_ctx = st.columns([3, 2])
+    with col_vcfg2:
+        model_options = [
+            "AUTO-DETECT (MODEL 5 / MAIN INFERENCE SWITCHER)",
+            "MODEL 1 — VISIBLE HUMAN DETECTION (Daylight Reconnaissance)",
+            "MODEL 2 — FIRE & SMOKE HAZARD DETECTION (Hazard Scene Analysis)",
+            "MODEL 3 — TERRAIN SEGMENTATION & NAVIGATION (FloodNet & D* Lite)",
+            "MODEL 4 — THERMAL HUMAN DETECTION (Thermal Infrared Search)",
+        ]
 
-        model4_results = None
-        model4_pipeline_ref = None
-        det_results = None
+        selected_model_str = st.selectbox(
+            "ASSIGN TARGET MODEL / INFERENCE MODE",
+            model_options,
+            key="video_target_model_select",
+        )
 
-        with col_inf:
-            st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+        # Map model string to target_model_id
+        target_model_id = None
+        if "MODEL 1" in selected_model_str:
+            target_model_id = "model1"
+        elif "MODEL 2" in selected_model_str:
+            target_model_id = "model2"
+        elif "MODEL 3" in selected_model_str:
+            target_model_id = "model4"
+        elif "MODEL 4" in selected_model_str:
+            target_model_id = "model5"
 
-            if image_np is not None:
-                # Run Inference Switching Model on input sensor image
-                if not st.session_state.get("context_manually_locked", False):
-                    switcher.infer_and_switch(image_np)
+        max_duration = st.slider("MAX VIDEO PROCESSING DURATION (SECONDS)", 5, 60, 15)
 
-                active_model_id = switcher.active_model_id
-                if active_model_id in ("model1", "model2", "model5"):
-                    engine = manager.get_or_load_engine(active_model_id)
-                    det_results = engine.run_inference(image_np, conf_threshold=conf_threshold)
+    if uploaded_video is not None:
+        input_video_path = st.session_state["input_video_path"]
 
-                    manager.perf_metrics["inference_time_ms"] = det_results["inference_time_ms"]
-                    manager.perf_metrics["fps"] = 1000.0 / max(1.0, det_results["inference_time_ms"])
-                    manager.perf_metrics["total_detections"] = det_results["total_detections"]
-                    manager.perf_metrics["device"] = det_results["device"]
+        col_vid1, col_vid2 = st.columns(2)
+        with col_vid1:
+            st.markdown("<p style='font-family:\"JetBrains Mono\"; font-size:0.8rem; font-weight:600; color:#475569;'>ORIGINAL VIDEO STREAM</p>", unsafe_allow_html=True)
+            st.video(input_video_path)
 
-                    st.markdown(f'<div class="card-title">Inference View — {det_results["total_detections"]} Detections</div>', unsafe_allow_html=True)
-                    st.image(det_results["annotated_image"], use_column_width=True)
-
-                elif active_model_id == "model4":
-                    pipeline = manager.get_or_load_engine("model4")
-                    model4_pipeline_ref = pipeline
-                    model4_results = pipeline.execute_pipeline(image_np)
-
-                    manager.perf_metrics["inference_time_ms"] = model4_results["inference_time_ms"]
-                    manager.perf_metrics["fps"] = 1000.0 / max(1.0, model4_results["inference_time_ms"])
-                    manager.perf_metrics["total_detections"] = model4_results["path_length"]
-                    manager.perf_metrics["device"] = model4_results["device"]
-
-                    st.markdown('<div class="card-title">Inference View — Terrain Segmentation & Path Overlay</div>', unsafe_allow_html=True)
-                    st.image(model4_results["annotated_image"], use_column_width=True)
+        with col_vid2:
+            st.markdown("<p style='font-family:\"JetBrains Mono\"; font-size:0.8rem; font-weight:600; color:#475569;'>PROCESSED ANNOTATED VIDEO STREAM</p>", unsafe_allow_html=True)
+            if st.session_state.get("output_video_bytes") is not None:
+                st.video(st.session_state["output_video_bytes"], format="video/mp4")
+                st.download_button(
+                    label="DOWNLOAD ANNOTATED VIDEO (MP4)",
+                    data=st.session_state["output_video_bytes"],
+                    file_name=f"annotated_{uploaded_video.name}",
+                    mime="video/mp4",
+                    type="primary",
+                    use_container_width=True,
+                )
             else:
-                st.markdown('<div class="card-title">Inference View</div>', unsafe_allow_html=True)
-                st.info("Awaiting sensor image input. Upload an image or click 'GENERATE UAV FRAME' to begin inference.")
-
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        with col_ctx:
-            # CONTEXT SWITCHING Card
-            render_context_switching_card(switcher, manager)
-
-        # 3. MODEL STATUS Panel (Full Width)
-        render_model_status_grid(manager)
-
-        # 4. Model-Specific Detailed Output Panels
-        if det_results is not None:
-            render_detection_table(det_results, active_model_id)
-        elif model4_results is not None:
-            render_model4_special_view(model4_results, model4_pipeline_ref)
-
-    # ==========================================================
-    # VIDEO MODE
-    # ==========================================================
-    elif input_type == "VIDEO":
-        st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-        st.markdown('<div class="card-title">Video Stream Upload & Processing Configuration</div>', unsafe_allow_html=True)
-
-        col_vcfg1, col_vcfg2 = st.columns(2)
-        with col_vcfg1:
-            uploaded_video = st.file_uploader(
-                "Upload UAV Video Stream (MP4, AVI, MOV, MKV)",
-                type=["mp4", "avi", "mov", "mkv"],
-                key="video_uploader",
-            )
-        if uploaded_video is not None:
-            vid_key = f"{uploaded_video.name}_{uploaded_video.size}"
-            if st.session_state.get("active_video_key") != vid_key:
-                orig_suffix = Path(uploaded_video.name).suffix or ".mp4"
-                tfile = tempfile.NamedTemporaryFile(delete=False, suffix=orig_suffix)
-                tfile.write(uploaded_video.getvalue() if hasattr(uploaded_video, "getvalue") else uploaded_video.read())
-                tfile.flush()
-                tfile.close()
-
-                # Default to AUTO-DETECT (MODEL 5 / MAIN INFERENCE SWITCHER) for all uploaded videos
-                preset_model = "AUTO-DETECT (MODEL 5 / MAIN INFERENCE SWITCHER)"
-
-                st.session_state["video_target_model_select"] = preset_model
-                st.session_state["active_video_key"] = vid_key
-                st.session_state["input_video_path"] = tfile.name
-                st.session_state["uploaded_video_name"] = uploaded_video.name
-                st.session_state["output_video_bytes"] = None
-                st.session_state["proc_res"] = None
-
-        with col_vcfg2:
-            model_options = [
-                "AUTO-DETECT (MODEL 5 / MAIN INFERENCE SWITCHER)",
-                "MODEL 1 — VISIBLE HUMAN DETECTION (Daylight Reconnaissance)",
-                "MODEL 2 — FIRE & SMOKE HAZARD DETECTION (Hazard Scene Analysis)",
-                "MODEL 3 — TERRAIN SEGMENTATION & NAVIGATION (FloodNet & D* Lite)",
-                "MODEL 4 — THERMAL HUMAN DETECTION (Thermal Infrared Search)",
-            ]
-
-            selected_model_str = st.selectbox(
-                "ASSIGN TARGET MODEL / INFERENCE MODE",
-                model_options,
-                key="video_target_model_select",
-            )
-
-            # Map model string to target_model_id
-            target_model_id = None
-            if "MODEL 1" in selected_model_str:
-                target_model_id = "model1"
-            elif "MODEL 2" in selected_model_str:
-                target_model_id = "model2"
-            elif "MODEL 3" in selected_model_str:
-                target_model_id = "model4"
-            elif "MODEL 4" in selected_model_str:
-                target_model_id = "model5"
-
-            max_duration = st.slider("MAX VIDEO PROCESSING DURATION (SECONDS)", 5, 60, 15)
-
-        if uploaded_video is not None:
-            input_video_path = st.session_state["input_video_path"]
-
-            col_vid1, col_vid2 = st.columns(2)
-            with col_vid1:
-                st.markdown("<p style='font-family:\"JetBrains Mono\"; font-size:0.8rem; font-weight:600; color:#475569;'>ORIGINAL VIDEO STREAM</p>", unsafe_allow_html=True)
-                st.video(input_video_path)
-
-            with col_vid2:
-                st.markdown("<p style='font-family:\"JetBrains Mono\"; font-size:0.8rem; font-weight:600; color:#475569;'>PROCESSED ANNOTATED VIDEO STREAM</p>", unsafe_allow_html=True)
-                if st.session_state.get("output_video_bytes") is not None:
-                    st.video(st.session_state["output_video_bytes"])
-                    st.download_button(
-                        label="DOWNLOAD ANNOTATED VIDEO (MP4)",
-                        data=st.session_state["output_video_bytes"],
-                        file_name=f"annotated_{uploaded_video.name}",
-                        mime="video/mp4",
-                        type="primary",
-                        use_container_width=True,
-                    )
-                else:
                     st.info("Click 'EXECUTE VIDEO INFERENCE & CONTEXT-SWITCHING PIPELINE' below to generate the annotated video.")
 
             start_btn = st.button("EXECUTE VIDEO INFERENCE & CONTEXT-SWITCHING PIPELINE", type="primary", use_container_width=True)
@@ -716,18 +613,17 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
 
-                st.markdown('</div>', unsafe_allow_html=True)
-        else:
-            st.info("Upload an .mp4, .avi, .mov, or .mkv UAV video stream to evaluate model detections and context switching across frames.")
+    else:
+        st.info("Upload an .mp4, .avi, .mov, or .mkv UAV video stream to evaluate model detections and context switching across frames.")
 
-        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-        # Context Switching & Model Status in Video Mode
-        col_c, col_m = st.columns([1, 1])
-        with col_c:
-            render_context_switching_card(switcher, manager)
-        with col_m:
-            render_model_status_grid(manager)
+    # Context Switching & Model Status in Video Mode
+    col_c, col_m = st.columns([1, 1])
+    with col_c:
+        render_context_switching_card(switcher, manager)
+    with col_m:
+        render_model_status_grid(manager)
 
     # 5. Performance Panel (Full Width)
     render_performance_panel(manager)
